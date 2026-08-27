@@ -45,3 +45,34 @@ def tokens_per_watt(total_tokens: int, wh: float, seconds: float = 1.0) -> float
     """Energy efficiency of serving: tokens per watt (higher is better)."""
     watts = (wh * 3600.0) / seconds if seconds > 0 else 0.0
     return total_tokens / watts if watts > 0 else 0.0
+
+
+def carbon_aware_schedule(
+    total_kwh: float,
+    current_region: str = "us-east-1",
+    target_region: str = "europe-north1",
+) -> dict:
+    """Calculate carbon and electricity cost reduction when shifting workloads to cleaner regions."""
+    cur_wh = total_kwh * 1000.0
+    cur_carbon = carbon_g(cur_wh, current_region)
+    tgt_carbon = carbon_g(cur_wh, target_region)
+    cur_cost = energy_cost_usd(cur_wh, current_region)
+    tgt_cost = energy_cost_usd(cur_wh, target_region)
+
+    carbon_saved_g = cur_carbon - tgt_carbon
+    carbon_reduction_pct = (carbon_saved_g / cur_carbon * 100.0) if cur_carbon > 0 else 0.0
+    cost_saved_usd = cur_cost - tgt_cost
+
+    return {
+        "current_region": current_region,
+        "target_region": target_region,
+        "total_kwh": round(total_kwh, 2),
+        "current_carbon_kg": round(cur_carbon / 1000.0, 3),
+        "target_carbon_kg": round(tgt_carbon / 1000.0, 3),
+        "carbon_saved_kg": round(carbon_saved_g / 1000.0, 3),
+        "carbon_reduction_pct": round(carbon_reduction_pct, 1),
+        "current_elec_cost_usd": round(cur_cost, 2),
+        "target_elec_cost_usd": round(tgt_cost, 2),
+        "elec_cost_saved_usd": round(cost_saved_usd, 2),
+    }
+

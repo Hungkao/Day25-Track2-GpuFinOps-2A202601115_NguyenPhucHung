@@ -46,6 +46,32 @@ def run(verbose: bool = True) -> dict:
         on_demand = num(catalog_by_type()[s["gpu_type"]]["on_demand_hr"])
         idle_waste += metrics.idle_waste_usd(s["idle_hours"], on_demand)
 
+    # Extension 2: Right-sizing by MBU for memory-bound workloads
+    rightsize_recs = []
+    mbu_monthly_savings = 0.0
+    for s in summary:
+        # Check if workload is memory-bound or candidate for right-sizing
+        gtype = s["gpu_type"]
+        cur_price = num(cat[gtype]["on_demand_hr"])
+        peak_bw = num(cat[gtype]["peak_bw_tbs"])
+        achieved_bw = s["mbu"] * peak_bw
+
+        rec = metrics.recommend_mbu_rightsizing(achieved_bw, gtype, cat)
+        if rec["recommended_gpu"] != gtype:
+            savings_per_hr = cur_price - rec["recommended_price"]
+            active_hours_per_day = 24 - s["idle_hours"]
+            monthly_sav = savings_per_hr * active_hours_per_day * 30
+            mbu_monthly_savings += monthly_sav
+            rightsize_recs.append({
+                "gpu_id": s["gpu_id"],
+                "current_gpu": gtype,
+                "recommended_gpu": rec["recommended_gpu"],
+                "current_price": cur_price,
+                "recommended_price": rec["recommended_price"],
+                "achieved_bw_tbs": round(achieved_bw, 3),
+                "monthly_savings": round(monthly_sav, 2),
+            })
+
     if verbose:
         print("== M1 Efficiency Audit ==")
         print(f"{'GPU':14}{'type':7}{'util%':>7}{'MFU':>7}{'MBU':>7}{'idle_h':>8}")
@@ -54,8 +80,22 @@ def run(verbose: bool = True) -> dict:
         print(f"\nGPU-Util LIES (util>=90% but MFU<30%): {[l['gpu_id'] for l in lies]}")
         print(f"Idle waste (1 day): ${idle_waste:,.2f}  ->  ${idle_waste*30:,.0f}/month")
 
-    return {"summary": summary, "lies": lies, "idle_waste_daily": round(idle_waste, 2)}
+        if rightsize_recs:
+            print("\n[Extension 2] MBU Right-sizing Recommendations:")
+            print(f"{'GPU ID':14}{'Current':9}{'Target':9}{'Old $/hr':>10}{'New $/hr':>10}{'Mo Savings':>12}")
+            for r in rightsize_recs:
+                print(f"{r['gpu_id']:14}{r['current_gpu']:9}{r['recommended_gpu']:9}${r['current_price']:>9.2f}${r['recommended_price']:>9.2f}${r['monthly_savings']:>11,.2f}")
+            print(f"Total potential MBU right-sizing savings: ${mbu_monthly_savings:,.2f}/month")
+
+    return {
+        "summary": summary,
+        "lies": lies,
+        "idle_waste_daily": round(idle_waste, 2),
+        "rightsize_recs": rightsize_recs,
+        "mbu_monthly_savings": round(mbu_monthly_savings, 2),
+    }
 
 
 if __name__ == "__main__":
     run()
+

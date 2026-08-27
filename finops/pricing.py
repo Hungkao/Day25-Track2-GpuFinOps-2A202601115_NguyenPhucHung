@@ -60,20 +60,82 @@ def break_even_utilization(discount_frac: float) -> float:
     return max(0.0, min(1.0, 1.0 - discount_frac))
 
 
-def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount: float = 0.45) -> str:
-    """Pick a purchasing tier from a workload's duty cycle + interruptibility.
+# Typical spot interruption rates by GPU architecture (illustrative 2026 data)
+DEFAULT_INTERRUPT_RATES = {
+    "H100": 0.03,    # High availability in dedicated clusters
+    "H200": 0.04,
+    "A100": 0.05,
+    "A10G": 0.08,    # Higher preemption on cloud commodity fleets
+    "L4": 0.06,
+    "B200": 0.05,
+    "MI300X": 0.07,
+}
 
-    DOCUMENTED simple policy (instructor extension point — swap in your own):
-      - interruptible & not 24/7  -> 'spot'      (checkpoint and ride the discount)
-      - duty cycle >= break-even  -> 'reserved'  (steady, high utilization)
-      - otherwise                 -> 'on_demand' (spiky / low duty)
+
+def cache_is_worth_it(
+    avg_cache_reads: float,
+    write_cost_per_m: float = 0.0,
+    read_discount: float = 0.10,
+    base_input_price_per_m: float = 3.0,
+) -> bool:
+    """Cache saves money when total savings from subsequent reads > write storage cost.
+
+    Break-even: reads * (base_price * (1 - read_discount)) >= write_cost
+    """
+    if write_cost_per_m <= 0:
+        return avg_cache_reads >= 1.0
+    savings_per_read_m = base_input_price_per_m * (1.0 - read_discount)
+    if savings_per_read_m <= 0:
+        return False
+    break_even_reads = write_cost_per_m / savings_per_read_m
+    return avg_cache_reads >= break_even_reads
+
+
+def cache_break_even_reads(
+    write_cost_per_m: float,
+    base_input_price_per_m: float,
+    read_discount: float = 0.10,
+) -> float:
+    """Calculate minimum read count required to justify prompt cache writing overhead."""
+    savings_per_read_m = base_input_price_per_m * (1.0 - read_discount)
+    if savings_per_read_m <= 0:
+        return float("inf")
+    return write_cost_per_m / savings_per_read_m
+
+
+def recommend_tier(
+    hours_per_day: float,
+    interruptible: bool,
+    reserved_discount: float = 0.45,
+    gpu_type: str | None = None,
+    job_days: int | None = None,
+    interruption_rates: dict | None = None,
+) -> str:
+    """Pick a purchasing tier from duty cycle, interruptibility, GPU preemption risk & duration.
+
+    Standard & Advanced multi-factor policy:
+      - interruptible & not 24/7 -> evaluate spot feasibility against interruption risk
+      - steady duty cycle >= break-even (e.g. >= 55% for 3yr or >= 80% for 1yr) -> reserved
+      - low duty or bursty non-interruptible -> on_demand
     """
     duty = max(0.0, hours_per_day) / 24.0
     be = break_even_utilization(reserved_discount)
+
+    # If job is interruptible and not 24/7 steady state, check interruption tolerance
     if interruptible and hours_per_day < 24:
-        return "spot"
+        rates = interruption_rates or DEFAULT_INTERRUPT_RATES
+        irate = rates.get(gpu_type, 0.05) if gpu_type else 0.05
+        # If preemption risk is excessive (> 20%) and job is mission-critical, on-demand/reserved might be preferred
+        if irate <= 0.15:
+            return "spot"
+
+    # Reserved commitment decision based on duty cycle and duration
     if duty >= be:
+        # If job duration is provided and very short (< 30 days total), long commitments carry lock-in risk
+        if job_days is not None and job_days < 14:
+            return "on_demand"
         return "reserved"
+
     return "on_demand"
 
 
@@ -102,3 +164,4 @@ def spot_checkpoint_cost(
         "on_demand_cost": round(on_demand_cost, 2),
         "savings_pct": round(savings_pct, 1),
     }
+

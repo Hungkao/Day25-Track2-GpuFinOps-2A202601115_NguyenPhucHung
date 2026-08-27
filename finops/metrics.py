@@ -61,3 +61,53 @@ def flag_util_lies(rows, util_threshold: float = 0.90, mfu_threshold: float = 0.
 def idle_waste_usd(idle_hours: float, on_demand_hr: float) -> float:
     """Dollars burned by a GPU left running idle (training done, instance up)."""
     return max(0.0, idle_hours) * max(0.0, on_demand_hr)
+
+
+def dollars_per_gb_vram(on_demand_hr: float, hbm_gb: float) -> float:
+    """Cost efficiency of VRAM capacity: $/GB-hour."""
+    if hbm_gb <= 0:
+        return 0.0
+    return on_demand_hr / hbm_gb
+
+
+def recommend_mbu_rightsizing(
+    achieved_bw_tbs: float,
+    current_gpu: str,
+    catalog: dict[str, dict],
+    headroom_factor: float = 1.25,
+) -> dict:
+    """Recommend an optimal lower-cost GPU for memory-bound workloads based on bandwidth demand.
+
+    Finds the cheapest GPU whose peak_bw_tbs >= achieved_bw_tbs * headroom_factor.
+    """
+    needed_bw = achieved_bw_tbs * headroom_factor
+    cur_info = catalog.get(current_gpu, {})
+    cur_price = float(cur_info.get("on_demand_hr", 0.0))
+
+    candidates = []
+    for gtype, info in catalog.items():
+        bw = float(info.get("peak_bw_tbs", 0.0))
+        price = float(info.get("on_demand_hr", 0.0))
+        vram = float(info.get("hbm_gb", 0.0))
+        if bw >= needed_bw and price < cur_price:
+            candidates.append({
+                "gpu_type": gtype,
+                "peak_bw_tbs": bw,
+                "on_demand_hr": price,
+                "hbm_gb": vram,
+                "vram_cost_per_gb": dollars_per_gb_vram(price, vram),
+                "savings_pct": round((1.0 - price / cur_price) * 100.0, 1),
+            })
+
+    candidates.sort(key=lambda x: x["on_demand_hr"])
+    best = candidates[0] if candidates else None
+    return {
+        "current_gpu": current_gpu,
+        "current_price": cur_price,
+        "needed_bw_tbs": round(needed_bw, 3),
+        "recommended_gpu": best["gpu_type"] if best else current_gpu,
+        "recommended_price": best["on_demand_hr"] if best else cur_price,
+        "savings_pct": best["savings_pct"] if best else 0.0,
+        "alternatives": candidates,
+    }
+
